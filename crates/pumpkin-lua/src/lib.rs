@@ -35,10 +35,13 @@ const MAX_PLUGIN_BYTES: u64 = 1024 * 1024;
 /// Embedded Bukkit-compatibility shim, the only preloaded Lua module.
 const SHIM_SOURCE: &str = include_str!("../lua/bukkit.lua");
 
+mod events;
 mod handles;
 mod sandbox;
+mod scheduler;
 mod validate;
 
+use events::bind_register_listener;
 use handles::bind_game_host;
 use sandbox::apply_sandbox;
 use validate::{bounded_string, config_path_for, validate_config_name};
@@ -85,6 +88,10 @@ impl PluginLoader for LuaPluginLoader {
 
     fn can_unload(&self) -> bool {
         true
+    }
+
+    fn on_tick(&self, _server: &Arc<Server>) {
+        scheduler::tick_tasks();
     }
 }
 
@@ -261,7 +268,48 @@ fn bind_server_host(lua: &Arc<ReentrantMutex<Lua>>, context: &Arc<Context>) -> R
     bind_server_info(lua, &context.server)?;
     let name = context.get_metadata().name.clone();
     let guard = lua.lock();
-    bind_game_host(&guard, context, lua, &name)
+    bind_game_host(&guard, context, lua, &name)?;
+    let host: Table = guard.globals().get("host").map_err(|e| e.to_string())?;
+    bind_scheduler(&guard, &host, lua)?;
+    bind_register_listener(&guard, &host, context, lua)
+}
+
+/// Tick scheduler: `scheduler_run_delayed`, `scheduler_run_repeating`,
+/// `scheduler_cancel`, mirroring the `bukkit.lua` shim.
+fn bind_scheduler(
+    lua: &Lua,
+    host: &Table,
+    plugin_lua: &Arc<ReentrantMutex<Lua>>,
+) -> Result<(), String> {
+    let delayed = Arc::clone(plugin_lua);
+    host.set(
+        "scheduler_run_delayed",
+        lua.create_function(move |_, (ticks, callback): (u64, Function)| {
+            scheduler::schedule(&delayed, ticks, None, callback).map_err(mlua::Error::external)
+        })
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let repeating = Arc::clone(plugin_lua);
+    host.set(
+        "scheduler_run_repeating",
+        lua.create_function(move |_, (delay, period, callback): (u64, u64, Function)| {
+            scheduler::schedule(&repeating, delay, Some(period), callback)
+                .map_err(mlua::Error::external)
+        })
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    host.set(
+        "scheduler_cancel",
+        lua.create_function(|_, id: u64| {
+            scheduler::cancel(id);
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Server info queries: mspt, tps and player count.

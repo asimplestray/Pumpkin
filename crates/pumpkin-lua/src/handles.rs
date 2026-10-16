@@ -74,7 +74,7 @@ fn lua_world(value: Value) -> Result<Arc<World>, mlua::Error> {
     }
 }
 
-fn push_player(
+pub fn push_player(
     lua: &Lua,
     server: &Arc<Server>,
     player: &Arc<Player>,
