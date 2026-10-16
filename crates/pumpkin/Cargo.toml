@@ -16,6 +16,7 @@ LegalCopyright = "Copyright © 2026 Aleksander Medvedev"
 pumpkin-core.workspace = true
 pumpkin-wasm-host.workspace = true
 pumpkin-config.workspace = true
+pumpkin-lua = { workspace = true, optional = true }
 pumpkin-data = { workspace = true, features = ["default"] }
 pumpkin-util.workspace = true
 pumpkin-world.workspace = true
@@ -30,6 +31,9 @@ console-subscriber = { workspace = true, optional = true }
 console-subscriber = ["dep:console-subscriber"]
 # Load plugins built against the v0.2 API. Off until the v0.2 ABI is finished.
 plugin-v0_2 = ["pumpkin-wasm-host/v0_2"]
+# Load `.lua` plugins through the embedded LuaJIT runtime. Off until the
+# Lua host API stabilizes.
+lua-plugins = ["dep:pumpkin-lua"]
 
 [lints]
 workspace = true

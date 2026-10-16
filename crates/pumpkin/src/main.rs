@@ -123,9 +123,11 @@ async fn main() {
         }
     });
 
-    let plugin_loaders: Vec<Arc<dyn PluginLoader>> = vec![Arc::new(WasmPluginLoader::new(
+    let mut plugin_loaders: Vec<Arc<dyn PluginLoader>> = vec![Arc::new(WasmPluginLoader::new(
         config.advanced.plugins.verify_signatures,
     ))];
+    #[cfg(feature = "lua-plugins")]
+    plugin_loaders.push(Arc::new(pumpkin_lua::LuaPluginLoader::new()));
 
     let pumpkin_server = PumpkinServer::new(
         config.basic,
