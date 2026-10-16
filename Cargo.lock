@@ -3367,7 +3367,10 @@ name = "pumpkin-lua"
 version = "0.2.0+26.3-26.51"
 dependencies = [
  "mlua",
+ "parking_lot",
+ "pumpkin-command",
  "pumpkin-core",
+ "pumpkin-util",
  "tracing",
 ]
 

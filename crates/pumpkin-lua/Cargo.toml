@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pumpkin-command.workspace = true
 pumpkin-core.workspace = true
+pumpkin-util.workspace = true
+parking_lot.workspace = true
 mlua.workspace = true
 tracing.workspace = true
 

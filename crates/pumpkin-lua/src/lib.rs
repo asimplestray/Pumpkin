@@ -19,10 +19,14 @@ use std::{
 };
 
 use mlua::{Function, Lua, RegistryKey, Table, Value};
-use pumpkin_core::plugin::{
-    PluginMetadata,
-    api::{Context, Plugin, PluginFuture},
-    loader::{LoaderError, PluginLoadFuture, PluginLoader, PluginUnloadFuture},
+use parking_lot::ReentrantMutex;
+use pumpkin_core::{
+    plugin::{
+        PluginMetadata,
+        api::{Context, Plugin, PluginFuture},
+        loader::{LoaderError, PluginLoadFuture, PluginLoader, PluginUnloadFuture},
+    },
+    server::Server,
 };
 
 /// Maximum plugin file size accepted on read.
@@ -31,9 +35,11 @@ const MAX_PLUGIN_BYTES: u64 = 1024 * 1024;
 /// Embedded Bukkit-compatibility shim, the only preloaded Lua module.
 const SHIM_SOURCE: &str = include_str!("../lua/bukkit.lua");
 
+mod handles;
 mod sandbox;
 mod validate;
 
+use handles::bind_game_host;
 use sandbox::apply_sandbox;
 use validate::{bounded_string, config_path_for, validate_config_name};
 
@@ -98,8 +104,14 @@ fn read_bounded(path: &Path) -> Result<String, String> {
 }
 
 /// A loaded Lua plugin: sandboxed state plus lifecycle entry points.
+///
+/// The state lives behind an `Arc` because command executors registered from
+/// Lua re-enter it long after `load` returned. Every access is serialized by
+/// the lock, and the lock is reentrant because `host` functions called from
+/// Lua (like `register_command`) lock it again on the same thread. Lua code
+/// still never runs concurrently with itself.
 pub struct LuaPlugin {
-    lua: Mutex<Lua>,
+    lua: Arc<ReentrantMutex<Lua>>,
     on_load: Option<RegistryKey>,
     on_unload: Option<RegistryKey>,
 }
@@ -139,7 +151,7 @@ impl LuaPlugin {
             .map_err(|e| LoaderError::InitializationFailed(e.to_string()))?;
         Ok((
             Self {
-                lua: Mutex::new(lua),
+                lua: Arc::new(ReentrantMutex::new(lua)),
                 on_load,
                 on_unload,
             },
@@ -152,10 +164,7 @@ impl LuaPlugin {
         let Some(key) = key else {
             return Ok(());
         };
-        let lua = self
-            .lua
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lua = self.lua.lock();
         let func: Function = lua
             .registry_value(key)
             .map_err(|e| format!("lua callback gone: {e}"))?;
@@ -248,29 +257,38 @@ fn bind_static_host(lua: &Lua, paths: &Arc<Mutex<PluginPaths>>) -> Result<(), St
 }
 
 /// Host functions needing the server (bound in `on_load`).
-fn bind_server_host(lua: &Mutex<Lua>, context: &Arc<Context>) -> Result<(), String> {
-    let lua = lua
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let host: Table = lua.globals().get("host").map_err(|e| e.to_string())?;
-    let server = context.server.clone();
+fn bind_server_host(lua: &Arc<ReentrantMutex<Lua>>, context: &Arc<Context>) -> Result<(), String> {
+    bind_server_info(lua, &context.server)?;
+    let name = context.get_metadata().name.clone();
+    let guard = lua.lock();
+    bind_game_host(&guard, context, lua, &name)
+}
+
+/// Server info queries: mspt, tps and player count.
+fn bind_server_info(lua: &Arc<ReentrantMutex<Lua>>, server: &Arc<Server>) -> Result<(), String> {
+    let guard = lua.lock();
+    let host: Table = guard.globals().get("host").map_err(|e| e.to_string())?;
+    let queried = Arc::clone(server);
     host.set(
         "get_mspt",
-        lua.create_function(move |_, ()| Ok(server.get_mspt()))
+        guard
+            .create_function(move |_, ()| Ok(queried.get_mspt()))
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let server = context.server.clone();
+    let queried = Arc::clone(server);
     host.set(
         "get_tps",
-        lua.create_function(move |_, ()| Ok(server.get_tps()))
+        guard
+            .create_function(move |_, ()| Ok(queried.get_tps()))
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let server = context.server.clone();
+    let queried = Arc::clone(server);
     host.set(
         "get_player_count",
-        lua.create_function(move |_, ()| Ok(server.get_all_players().len() as u32))
+        guard
+            .create_function(move |_, ()| Ok(queried.get_all_players().len() as u32))
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
